@@ -16,16 +16,6 @@ from pydantic import Field
 
 from openenv.core.env_server.types import Action, Observation
 
-ActionType = Literal[
-    "request_vram",
-    "propose_ordering",
-    "respond_to_proposal",
-    "delay_job",
-    "negotiate_turn_taking",
-    "commit_schedule",
-]
-JobStatus = Literal["queued", "running", "completed"]
-
 
 # ── Action sub-models ────────────────────────────────────────────────────────
 
