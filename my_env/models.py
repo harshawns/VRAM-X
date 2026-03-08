@@ -1,18 +1,16 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
-
 """
-Data models for the My Env Environment.
+Action and Observation models for the VRAM Exchange environment.
 
-This module contains both the OpenEnv action/observation schemas and the
-internal world-state dataclasses used by the VRAM allocation environment.
+VRAMAction: structured JSON the LLM outputs each round (requests, proposals,
+responses, and a free-text signal for cheap-talk / bluffing).
+
+VRAMObservation: partially observable view of the world from the protagonist
+company's perspective.
 """
 
-from dataclasses import asdict, dataclass, field
-from typing import Any, Literal
+from __future__ import annotations
+
+from typing import Any, Optional
 
 from pydantic import Field
 
@@ -29,131 +27,118 @@ ActionType = Literal[
 JobStatus = Literal["queued", "running", "completed"]
 
 
-class MyAction(Action):
-    """Structured action emitted by one company during a negotiation step."""
+# ── Action sub-models ────────────────────────────────────────────────────────
 
-    company_id: str = Field(..., description="Company taking the action")
-    action_type: ActionType = Field(
-        ..., description="Which scheduling or negotiation move the company selects"
-    )
-    job_id: str | None = Field(
-        default=None, description="Job referenced by request or delay actions"
-    )
-    target_gpu_id: str | None = Field(
-        default=None, description="GPU targeted by the action when relevant"
-    )
-    proposal_id: str | None = Field(
-        default=None, description="Proposal being created or responded to"
-    )
-    proposed_job_order: list[str] = Field(
-        default_factory=list,
-        description="Ordered list of job IDs proposed for scheduling priority",
-    )
-    accept_proposal: bool | None = Field(
-        default=None, description="Whether the referenced proposal is accepted"
-    )
-    turn_taking_partner_id: str | None = Field(
-        default=None, description="Counterparty for a turn-taking agreement"
-    )
-    committed_schedule: dict[str, list[str]] = Field(
-        default_factory=dict,
-        description="Per-GPU job allocation committed by the acting company",
-    )
+class GPURequestModel(Action):
+    job_id: str = Field(..., description="ID of the job to schedule")
+    gpu_id: str = Field(..., description="Target GPU to place the job on")
+    vram_needed: int = Field(..., description="VRAM in GB this job requires")
 
 
-class MyObservation(Observation):
-    """Per-company observation of public cluster state and private queue data."""
-
-    company_id: str = Field(default="", description="Company receiving this observation")
-    step_count: int = Field(default=0, description="Current environment step")
-    gpu_availability_gb: dict[str, int] = Field(
-        default_factory=dict,
-        description="Free VRAM per GPU visible to the observing company",
-    )
-    gpu_usage_gb: dict[str, int] = Field(
-        default_factory=dict,
-        description="Used VRAM per GPU visible to the observing company",
-    )
-    running_jobs_by_gpu: dict[str, list[str]] = Field(
-        default_factory=dict,
-        description="Currently running job IDs grouped by GPU",
-    )
-    public_requests: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description="Structured VRAM requests visible to all companies",
-    )
-    negotiation_history: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description="Prior proposals, responses, and turn-taking agreements",
-    )
-    own_job_queue: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description="Full private queue for the observing company",
-    )
+class ProposalActionModel(Action):
+    to_company: str = Field(..., description="Target company for proposal")
+    type: str = Field("share", description="Proposal type: share, trade, coalition, yield")
+    gpu_id: Optional[str] = Field(None, description="GPU involved in the proposal")
+    vram_offered: int = Field(0, description="VRAM being offered in GB")
+    message: str = Field("", description="Free-form message (can bluff)")
 
 
-@dataclass(slots=True)
-class Job:
-    """A single unit of work owned by one company."""
-
-    job_id: str
-    company_id: str
-    required_vram_gb: int
-    runtime_ticks: int
-    priority: int
-    remaining_ticks: int | None = None
-    status: JobStatus = "queued"
-    assigned_gpu_id: str | None = None
-
-    def __post_init__(self) -> None:
-        """Validate the job and initialize derived runtime state."""
-        if self.required_vram_gb <= 0:
-            raise ValueError("required_vram_gb must be > 0")
-        if self.runtime_ticks <= 0:
-            raise ValueError("runtime_ticks must be > 0")
-        if not 1 <= self.priority <= 3:
-            raise ValueError("priority must be in [1, 3]")
-        if self.remaining_ticks is None:
-            self.remaining_ticks = self.runtime_ticks
-        if self.status not in {"queued", "running", "completed"}:
-            raise ValueError("status must be queued, running, or completed")
+class ProposalResponseModel(Action):
+    proposal_id: str = Field(..., description="ID of the proposal being responded to")
+    accept: bool = Field(..., description="Whether to accept the proposal")
+    counter_offer: Optional[str] = Field(None, description="Optional counter-offer message")
 
 
-@dataclass(slots=True)
-class CompanyState:
-    """Per-company queue and fairness bookkeeping."""
-
-    company_id: str
-    # Each company manages its own private queue of jobs.
-    job_queue: list[Job] = field(default_factory=list)
-    starvation_steps: int = 0
+class VRAMAction(Action):
+    """Full action for one round of the VRAM Exchange."""
+    requests: list[GPURequestModel] = Field(default_factory=list, description="GPU allocation requests")
+    proposals: list[ProposalActionModel] = Field(default_factory=list, description="Outgoing proposals to other companies")
+    responses: list[ProposalResponseModel] = Field(default_factory=list, description="Responses to incoming proposals")
+    signal: str = Field("", description="Public message visible to all companies (can bluff)")
 
 
-@dataclass(slots=True)
-class GPUState:
-    """Tracks one GPU's VRAM capacity and currently running jobs."""
+# ── Observation sub-models ───────────────────────────────────────────────────
 
-    gpu_id: str
-    total_vram_gb: int
-    used_vram_gb: int = 0
-    running_job_ids: list[str] = field(default_factory=list)
-
-    @property
-    def free_vram_gb(self) -> int:
-        """Compute available VRAM instead of storing duplicate state."""
-        return self.total_vram_gb - self.used_vram_gb
+class JobView(Observation):
+    """Full view of a job (only for the protagonist's own jobs)."""
+    id: str = ""
+    vram_required: int = 0
+    runtime_total: int = 0
+    runtime_remaining: int = 0
+    priority: int = 1
+    assigned_gpu: Optional[str] = None
 
 
-@dataclass(slots=True)
-class GlobalState:
-    """Full episode snapshot shared across the environment loop."""
+class CompanyView(Observation):
+    """Full view of the protagonist's own company."""
+    id: str = ""
+    pending_jobs: list[JobView] = Field(default_factory=list)
+    running_jobs: list[JobView] = Field(default_factory=list)
+    num_completed: int = 0
+    starvation_counter: int = 0
+    reputation: float = 0.5
 
-    seed: int | None
-    step_count: int = 0
-    companies: dict[str, CompanyState] = field(default_factory=dict)
-    gpus: list[GPUState] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert nested dataclasses into plain Python types for debugging/JSON."""
-        return asdict(self)
+class GPUPublicView(Observation):
+    """Public info about a GPU (aggregate only, no per-job breakdown)."""
+    id: str = ""
+    total_vram: int = 0
+    free_vram: int = 0
+    num_jobs: int = 0
+
+
+class CompanyPublicView(Observation):
+    """Limited view of another company."""
+    id: str = ""
+    num_pending: int = 0
+    num_running: int = 0
+    num_completed: int = 0
+    starvation_counter: int = 0
+    reputation: float = 0.5
+
+
+class ProposalView(Observation):
+    """A proposal received by the protagonist."""
+    id: str = ""
+    from_company: str = ""
+    type: str = ""
+    gpu_id: Optional[str] = None
+    vram_offered: int = 0
+    message: str = ""
+
+
+class SignalView(Observation):
+    """A public signal broadcast by another company."""
+    company_id: str = ""
+    message: str = ""
+
+
+class RoundResultsView(Observation):
+    """Summary of what happened in the last round."""
+    jobs_completed: list[str] = Field(default_factory=list)
+    allocations_granted: int = 0
+    allocations_denied: int = 0
+    coalitions_formed: int = 0
+
+
+class RewardBreakdownView(Observation):
+    """Breakdown of the reward components."""
+    priority_progress: float = 0.0
+    idle_vram_penalty: float = 0.0
+    starvation_penalty: float = 0.0
+    coalition_bonus: float = 0.0
+    total: float = 0.0
+
+
+class VRAMObservation(Observation):
+    """Partially observable view of the VRAM Exchange world."""
+    step: int = Field(default=0, description="Current step number")
+    max_steps: int = Field(default=20, description="Maximum steps in episode")
+    my_company: CompanyView = Field(default_factory=CompanyView)
+    gpu_states: list[GPUPublicView] = Field(default_factory=list)
+    other_companies: list[CompanyPublicView] = Field(default_factory=list)
+    incoming_proposals: list[ProposalView] = Field(default_factory=list)
+    signals: list[SignalView] = Field(default_factory=list)
+    round_results: RoundResultsView = Field(default_factory=RoundResultsView)
+    reward_breakdown: RewardBreakdownView = Field(default_factory=RewardBreakdownView)
+    text_render: str = Field(default="", description="Human-readable text rendering of the observation")

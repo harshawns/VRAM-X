@@ -1,19 +1,12 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
+"""VRAM Exchange: Multi-agent GPU negotiation environment."""
 
-"""My Env Environment."""
-
-from .generator import generate_episode_state
-from .models import MyAction, MyObservation
+from .client import VRAMExchange
+from .models import VRAMAction, VRAMObservation
 
 __all__ = [
-    "MyAction",
-    "MyObservation",
-    "MyEnv",
-    "generate_episode_state",
+    "VRAMAction",
+    "VRAMObservation",
+    "VRAMExchange",
 ]
 
 
