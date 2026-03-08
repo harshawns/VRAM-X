@@ -1,11 +1,5 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
+"""VRAM Exchange environment server components."""
 
-"""My Env environment server components."""
+from .vram_environment import VRAMEnvironment
 
-from .my_env_environment import MyEnvironment
-
-__all__ = ["MyEnvironment"]
+__all__ = ["VRAMEnvironment"]
